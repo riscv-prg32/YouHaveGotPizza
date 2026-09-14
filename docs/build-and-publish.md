@@ -7,10 +7,7 @@ cartridge. The portable build uses the C cartridge entry prefix
 ## Prerequisites
 
 - A local checkout of `riscv-prg32/PRG32`.
-- A PRG32 checkout from the portable ABI-table tooling branch or newer.
-- A PRG32 resident firmware build, for example `PRG32/build/PRG32.elf`, only
-  when building the legacy absolute-import format.
-- The RISC-V toolchain used by `PRG32/tools/prg32_game.py`.
+- A current PRG32 `main` checkout and its RISC-V toolchain.
 - A running CartridgeStore instance when publishing.
 
 Set `PRG32_REPO` if the PRG32 repository is not next to this repository:
@@ -38,21 +35,13 @@ scripts/build.sh
 
 The script writes `dist/you-have-got-pizza-qemu.prg32`.
 
-## Build the Legacy Absolute-Import Format
-
-Use this only for firmware images that do not yet support portable ABI-table
-cartridges:
-
-```bash
-export PRG32_PORTABLE=0
-export PRG32_ARCHITECTURE=esp32c6
-scripts/build.sh "$PRG32_REPO/build/PRG32.elf"
-```
+Current PRG32 `main` builds portable cartridges only. The assembly and C
+versions both use the public timed-note API for short effects.
 
 ## Upload to a Board
 
 ```bash
-python3 "$PRG32_REPO/tools/prg32_game.py" upload \
+PYTHONPATH="$PRG32_REPO" python3 -m prg32 esp32c6 upload \
   dist/you-have-got-pizza-esp32c6.prg32 \
   --url http://192.168.4.1
 ```
@@ -63,9 +52,9 @@ Wi-Fi.
 ## Stage in QEMU
 
 ```bash
-python3 "$PRG32_REPO/tools/prg32_game.py" upload-qemu \
+PYTHONPATH="$PRG32_REPO" python3 -m prg32 qemu upload \
   dist/you-have-got-pizza-qemu.prg32 \
-  --flash "$PRG32_REPO/build-qemu/flash_image.bin" \
+  --flash "$PRG32_REPO/build-qemu/qemu_flash.bin" \
   --partitions "$PRG32_REPO/partitions_prg32.csv"
 ```
 
@@ -88,7 +77,7 @@ The bundle is `dist/you-have-got-pizza-store-bundle.zip`.
 ## Publish to CartridgeStore
 
 ```bash
-python3 "$PRG32_REPO/tools/prg32_game.py" publish-bundle \
+PYTHONPATH="$PRG32_REPO" python3 -m prg32 store publish-bundle \
   dist/you-have-got-pizza-store-bundle.zip \
   --store-url http://192.168.1.42:5080 \
   --token "$PRG32_STORE_TOKEN"
