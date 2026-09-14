@@ -136,7 +136,7 @@ cd $HOME/src/you_have_got_pizza
 ```
 
 The default build matches the portable cartridge workflow used by DeviceDemo on
-branch `dev-portable-1`: it builds the C cartridge as a portable ABI-table
+PRG32 `main`: it builds the C cartridge as a portable ABI-table
 cartridge, attaches Store metadata, and writes a publishable `.prg32` file.
 
 ## Build a portable cartridge
@@ -169,22 +169,15 @@ The output is:
 dist/you-have-got-pizza-qemu.prg32
 ```
 
-Portable builds are enabled by default with `PRG32_PORTABLE=1`. To build the
-legacy firmware-specific absolute-import format for older firmware, set
-`PRG32_PORTABLE=0` and pass the matching firmware ELF:
-
-```sh
-export PRG32_PORTABLE=0
-export PRG32_ARCHITECTURE=esp32c6
-scripts/build.sh "$PRG32_REPO/build/PRG32.elf"
-```
+Current PRG32 `main` builds portable cartridges only. Both C and assembly
+versions use its public timed-note audio API.
 
 ## Deploy a portable cartridge
 
 Upload to a PRG32 ESP32-C6 board:
 
 ```sh
-python3 "$PRG32_REPO/tools/prg32_game.py" upload \
+PYTHONPATH="$PRG32_REPO" python3 -m prg32 esp32c6 upload \
   dist/you-have-got-pizza-esp32c6.prg32 \
   --url http://192.168.4.1
 ```
@@ -192,9 +185,9 @@ python3 "$PRG32_REPO/tools/prg32_game.py" upload \
 Stage the QEMU cartridge into a PRG32 QEMU flash image:
 
 ```sh
-python3 "$PRG32_REPO/tools/prg32_game.py" upload-qemu \
+PYTHONPATH="$PRG32_REPO" python3 -m prg32 qemu upload \
   dist/you-have-got-pizza-qemu.prg32 \
-  --flash "$PRG32_REPO/build-qemu/flash_image.bin" \
+  --flash "$PRG32_REPO/build-qemu/qemu_flash.bin" \
   --partitions "$PRG32_REPO/partitions_prg32.csv"
 ```
 
@@ -213,7 +206,7 @@ scripts/build.sh
 
 scripts/pack-store-bundle.sh
 
-python3 "$PRG32_REPO/tools/prg32_game.py" publish-bundle \
+PYTHONPATH="$PRG32_REPO" python3 -m prg32 store publish-bundle \
   dist/you-have-got-pizza-store-bundle.zip \
   --store-url http://192.168.1.42:5080 \
   --token "$PRG32_STORE_TOKEN"
@@ -222,9 +215,8 @@ python3 "$PRG32_REPO/tools/prg32_game.py" publish-bundle \
 See `docs/build-and-publish.md` for the focused build, deploy, QEMU, and Store
 workflow.
 
-The older `tools/build_cartridges.sh` helper is still available for the
-previous firmware-building workflow. It uses `PRG32_ROOT` and can build both
-the C and assembly examples against a specific resident firmware image.
+`tools/build_cartridges.sh` builds both C and assembly portable cartridges.
+It can also build the resident firmware before staging or uploading them.
 
 ## Build the resident PRG32 firmware for QEMU
 
@@ -290,7 +282,7 @@ idf.py -B build-qemu \
 To stage the C cartridge instead, build normally and call the PRG32 builder directly:
 
 ```sh
-python3 $PRG32_ROOT/tools/prg32_game.py upload-qemu \
+PYTHONPATH="$PRG32_ROOT" python3 -m prg32 qemu upload \
   dist/qemu/you-have-got-pizza-c.prg32 \
   --flash $PRG32_ROOT/build-qemu/qemu_flash.bin
 ```
@@ -345,38 +337,25 @@ To build and upload the assembly cartridge to a running ESP32-C6 PRG32 board:
 To upload the C cartridge instead:
 
 ```sh
-python3 $PRG32_ROOT/tools/prg32_game.py upload \
+PYTHONPATH="$PRG32_ROOT" python3 -m prg32 esp32c6 upload \
   dist/esp32c6/you-have-got-pizza-c.prg32 \
   --url http://192.168.4.1
 ```
 
-## Manual cartridge build commands
+## Manual portable cartridge build commands
 
-The helper script is recommended, but the manual commands are useful for teaching what happens under the hood.
-
-Assembly cartridge for QEMU:
-
-```sh
-python3 $PRG32_ROOT/tools/prg32_game.py build \
-  assembly/game.S \
-  --firmware-elf $PRG32_ROOT/build-qemu/PRG32.elf \
-  --entry-prefix you_have_got_pizza \
-  --name "You Have Got Pizza ASM" \
-  --out dist/qemu/you-have-got-pizza-asm.prg32
-```
-
-C cartridge for QEMU:
+From the PRG32 checkout, build either source with the current CLI. Use
+`--architecture qemu` for the emulator and `--architecture esp32c6` for the
+physical board.
 
 ```sh
-python3 $PRG32_ROOT/tools/prg32_game.py build \
-  c/game.c \
-  --firmware-elf $PRG32_ROOT/build-qemu/PRG32.elf \
-  --entry-prefix you_have_got_pizza_c \
-  --name "You Have Got Pizza C" \
-  --out dist/qemu/you-have-got-pizza-c.prg32
+cd "$PRG32_ROOT"
+python3 -m prg32 cartridge build /path/to/YouHaveGotPizza/assembly/game.S \
+  --portable --architecture qemu --entry-prefix you_have_got_pizza \
+  --name pizza-asm --out /path/to/YouHaveGotPizza/dist/qemu/pizza-asm.prg32
 ```
 
-For ESP32-C6, replace `build-qemu` with `build-esp32c6` and write outputs under `dist/esp32c6`.
+The C source uses `c/game.c` and entry prefix `you_have_got_pizza_c`.
 
 ## Personalizing graphics and sounds
 
@@ -474,7 +453,9 @@ To personalize sounds:
 2. regenerate with `python3 generate_assets.py`;
 3. keep sounds short, mono, and simple for embedded friendliness.
 
-The current cartridge calls `prg32_audio_beep()` directly in C and assembly. To keep the pedagogical mapping simple, update the beep frequencies in these places when the WAV masters change:
+The cartridge converts short tone frequencies to MIDI notes with `play_tone()`
+in C and `pizza_audio_note` in assembly. Update their frequency arguments when
+the WAV masters change:
 
 - climb sounds: `move_player()` in C and `move_player_asm` in assembly;
 - collect sounds: `collect_ingredients()` in C and `collect_asm` in assembly;
@@ -503,7 +484,7 @@ Options:
 |---|---|
 | `--prg32-root DIR` | Path to a cloned PRG32 repository. Equivalent to setting `PRG32_ROOT`. |
 | `--out-dir DIR` | Where to write `.prg32` cartridges. Default: `dist/<target>`. |
-| `--skip-firmware` | Do not rebuild the resident PRG32 firmware. Useful when `PRG32.elf` already exists. |
+| `--skip-firmware` | Do not rebuild the resident PRG32 firmware. Useful when the resident firmware is already built. |
 | `--upload-qemu` | Stage the assembly cartridge into `qemu_flash.bin`. |
 | `--upload-hardware` | Upload the assembly cartridge to ESP32-C6 over Wi-Fi. |
 | `--url URL` | Hardware upload URL. Default: `http://192.168.4.1`. |

@@ -76,7 +76,7 @@ professional habit in the exercise.
    Upload to hardware:
 
    ```bash
-   python3 "$PRG32_REPO/tools/prg32_game.py" upload \
+   PYTHONPATH="$PRG32_REPO" python3 -m prg32 esp32c6 upload \
      dist/you-have-got-pizza-esp32c6.prg32 \
      --url http://192.168.4.1
    ```
@@ -84,9 +84,9 @@ professional habit in the exercise.
    Stage for QEMU:
 
    ```bash
-   python3 "$PRG32_REPO/tools/prg32_game.py" upload-qemu \
+   PYTHONPATH="$PRG32_REPO" python3 -m prg32 qemu upload \
      dist/you-have-got-pizza-qemu.prg32 \
-     --flash "$PRG32_REPO/build-qemu/flash_image.bin" \
+     --flash "$PRG32_REPO/build-qemu/qemu_flash.bin" \
      --partitions "$PRG32_REPO/partitions_prg32.csv"
    ```
 
@@ -240,10 +240,8 @@ Two generated files:
 
 ### Debug Notes
 
-If `scripts/build.sh` says that portable cartridge builds are unsupported, the
-PRG32 checkout is too old for this workflow. Update PRG32 to a branch or
-release with portable ABI-table cartridge tooling, or use the legacy format
-shown in `docs/build-and-publish.md`.
+If the script cannot find `prg32/__main__.py`, set `PRG32_REPO` to the
+current PRG32 `main` checkout and try again.
 
 ### Files and Code to Add
 
@@ -278,12 +276,13 @@ out_file="$repo_dir/dist/you-have-got-pizza-$architecture.prg32"
 
 mkdir -p "$repo_dir/dist"
 
-python3 "$prg32_repo/tools/prg32_game.py" build \
+(cd "$prg32_repo" && python3 -m prg32 cartridge build \
   "$source_file" \
   --entry-prefix "$entry_prefix" \
   --name "you-have-got-pizza" \
   --portable \
-  --out "$out_file"
+  --architecture "$architecture" \
+  --out "$out_file")
 ```
 
 File: shell environment, not committed source.
@@ -521,11 +520,11 @@ static void move_player(uint32_t input) {
         if ((input & PRG32_BTN_UP) && player.row > 0) {
             player.x = ladder_x[ladder] - PLAYER_W / 2;
             player.row--;
-            prg32_audio_beep(330, 18);
+            play_tone(330, 18);
         } else if ((input & PRG32_BTN_DOWN) && player.row < NUM_ROWS - 1) {
             player.x = ladder_x[ladder] - PLAYER_W / 2;
             player.row++;
-            prg32_audio_beep(220, 18);
+            play_tone(220, 18);
         }
     }
 
@@ -677,7 +676,7 @@ static void collect_ingredients(void) {
             p->collected = 1;
             collected_now = 1;
             score += 25;
-            prg32_audio_beep(660 + (p->kind * 55), 45);
+            play_tone(660 + (p->kind * 55), 45);
         }
     }
 
@@ -695,7 +694,7 @@ static void collect_ingredients(void) {
         fed_students++;
         score += 250;
         message_timer = 120;
-        prg32_audio_beep(988, 100);
+        play_tone(988, 100);
         setup_ingredients();
         reset_enemies();
     }
@@ -782,7 +781,7 @@ static void check_collisions(void) {
         if (e->row == player.row &&
             abs_i((player.x + PLAYER_W / 2) - (e->x + ENEMY_W / 2)) < 11) {
             if (lives > 0) lives--;
-            prg32_audio_beep(120, 150);
+            play_tone(120, 150);
 
             if (lives == 0) {
                 game_over = 1;
@@ -1080,7 +1079,7 @@ Students publish, verify, and document the final cartridge.
 2. Publish the bundle:
 
    ```bash
-   python3 "$PRG32_REPO/tools/prg32_game.py" publish-bundle \
+   PYTHONPATH="$PRG32_REPO" python3 -m prg32 store publish-bundle \
      dist/you-have-got-pizza-store-bundle.zip \
      --store-url http://192.168.1.42:5080 \
      --token "$PRG32_STORE_TOKEN"

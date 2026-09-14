@@ -98,6 +98,43 @@ enemy_dir:      .space NUM_ENEMY
 .global you_have_got_pizza_update
 .global you_have_got_pizza_draw
 
+/* Convert the five classroom sound frequencies to nearby MIDI pitches.
+   Input: a0 = frequency in Hz, a1 = duration in milliseconds.
+   The wrapper preserves ra and keeps the stack aligned for the C ABI call. */
+pizza_audio_note:
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+    mv      a4, a1
+    li      t0, 170
+    blt     a0, t0, .L_tone_low
+    li      t0, 275
+    blt     a0, t0, .L_tone_a3
+    li      t0, 495
+    blt     a0, t0, .L_tone_e4
+    li      t0, 825
+    blt     a0, t0, .L_tone_e5
+    li      a2, 83              /* B5, near 988 Hz */
+    j       .L_tone_call
+.L_tone_low:
+    li      a2, 48              /* C3, near 120 Hz */
+    j       .L_tone_call
+.L_tone_a3:
+    li      a2, 57              /* A3, 220 Hz */
+    j       .L_tone_call
+.L_tone_e4:
+    li      a2, 64              /* E4, 330 Hz */
+    j       .L_tone_call
+.L_tone_e5:
+    li      a2, 76              /* E5, 660 Hz */
+.L_tone_call:
+    li      a0, 0               /* audio channel */
+    li      a1, 0               /* default instrument */
+    li      a3, 190             /* volume */
+    call    prg32_audio_note
+    lw      ra, 12(sp)
+    addi    sp, sp, 16
+    ret
+
 /* ------------------------------------------------------------
  * Helper: row_to_y
  * Input:  a0 = row index 0..3
@@ -336,7 +373,7 @@ you_have_got_pizza_update:
     addi    s1, s1, -1
     li      a0, 330
     li      a1, 18
-    call    prg32_audio_beep
+    call    pizza_audio_note
 6:  andi    t2, s0, BTN_DOWN
     beqz    t2, 7f
     li      t3, 3
@@ -344,7 +381,7 @@ you_have_got_pizza_update:
     addi    s1, s1, 1
     li      a0, 220
     li      a1, 18
-    call    prg32_audio_beep
+    call    pizza_audio_note
 7:  la      t0, player_row
     sw      s1, 0(t0)
 .L_no_ladder_move:
@@ -413,7 +450,7 @@ collect_asm:
     sw      t2, 0(t1)
     li      a0, 660
     li      a1, 45
-    call    prg32_audio_beep
+    call    pizza_audio_note
 
 .L_collect_next:
     addi    s0, s0, 1
@@ -447,7 +484,7 @@ collect_asm:
     call    reset_enemies
     li      a0, 988
     li      a1, 100
-    call    prg32_audio_beep
+    call    pizza_audio_note
 
 .L_collect_return:
     lw      s1, 20(sp)
@@ -535,7 +572,9 @@ collide_asm:
     sw      t2, 0(t1)
     li      a0, 120
     li      a1, 150
-    call    prg32_audio_beep
+    call    pizza_audio_note
+    la      t1, lives
+    lw      t2, 0(t1)
     blez    t2, 5f
     call    reset_player
     call    reset_enemies

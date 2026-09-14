@@ -115,11 +115,10 @@ if [[ -z "$OUT_DIR" ]]; then
 fi
 mkdir -p "$OUT_DIR"
 
-BUILDER="$PRG32_ROOT/tools/prg32_game.py"
-FIRMWARE_ELF="$BUILD_DIR/PRG32.elf"
+BUILDER="$PRG32_ROOT/prg32/__main__.py"
 
 if [[ ! -f "$BUILDER" ]]; then
-  echo "Cannot find PRG32 cartridge builder: $BUILDER" >&2
+  echo "Cannot find PRG32 module: $BUILDER" >&2
   exit 1
 fi
 
@@ -129,28 +128,22 @@ if [[ "$SKIP_FIRMWARE" -eq 0 ]]; then
   (cd "$PRG32_ROOT" && idf.py -B "$BUILD_DIR" -D SDKCONFIG="$BUILD_DIR/sdkconfig" -D SDKCONFIG_DEFAULTS="$DEFAULTS" build)
 fi
 
-if [[ ! -f "$FIRMWARE_ELF" ]]; then
-  echo "Missing firmware ELF: $FIRMWARE_ELF" >&2
-  echo "Build PRG32 first or rerun without --skip-firmware." >&2
-  exit 1
-fi
-
 ASM_CART="$OUT_DIR/you-have-got-pizza-asm.prg32"
 C_CART="$OUT_DIR/you-have-got-pizza-c.prg32"
 
-python3 "$BUILDER" build \
+(cd "$PRG32_ROOT" && python3 -m prg32 cartridge build \
   "$GAME_ROOT/assembly/game.S" \
-  --firmware-elf "$FIRMWARE_ELF" \
+  --portable --architecture "$TARGET_MODE" \
   --entry-prefix you_have_got_pizza \
   --name "You Have Got Pizza ASM" \
-  --out "$ASM_CART"
+  --out "$ASM_CART")
 
-python3 "$BUILDER" build \
+(cd "$PRG32_ROOT" && python3 -m prg32 cartridge build \
   "$GAME_ROOT/c/game.c" \
-  --firmware-elf "$FIRMWARE_ELF" \
+  --portable --architecture "$TARGET_MODE" \
   --entry-prefix you_have_got_pizza_c \
   --name "You Have Got Pizza C" \
-  --out "$C_CART"
+  --out "$C_CART")
 
 echo "Built cartridges:"
 echo "  $ASM_CART"
@@ -167,7 +160,7 @@ if [[ "$UPLOAD_QEMU" -eq 1 ]]; then
     echo "  cd $PRG32_ROOT && idf.py -B $BUILD_DIR -D SDKCONFIG=$BUILD_DIR/sdkconfig -D SDKCONFIG_DEFAULTS=$DEFAULTS qemu --graphics monitor" >&2
     exit 1
   fi
-  python3 "$BUILDER" upload-qemu "$ASM_CART" --flash "$FLASH_BIN"
+  (cd "$PRG32_ROOT" && python3 -m prg32 qemu upload "$ASM_CART" --flash "$FLASH_BIN")
   echo "Staged assembly cartridge into $FLASH_BIN"
 fi
 
@@ -176,6 +169,6 @@ if [[ "$UPLOAD_HARDWARE" -eq 1 ]]; then
     echo "--upload-hardware can only be used with target esp32c6" >&2
     exit 2
   fi
-  python3 "$BUILDER" upload "$ASM_CART" --url "$UPLOAD_URL"
+  (cd "$PRG32_ROOT" && python3 -m prg32 esp32c6 upload "$ASM_CART" --url "$UPLOAD_URL")
   echo "Uploaded assembly cartridge to $UPLOAD_URL"
 fi

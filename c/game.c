@@ -7,7 +7,7 @@
  * pizza slices for starving students. All visuals are generated from rectangles
  * and tiny original data tables in this file. The repository also includes
  * copyright-clean PNG sprite sheets and WAV masters under assets/; the current
- * cartridge uses rectangle sprites and PRG32 beeps so it remains small and easy
+ * cartridge uses rectangle sprites and PRG32 timed notes so it remains small and easy
  * to study in assembly.
  *
  * PRG32 asks a cartridge to export exactly three functions. The cartridge builder
@@ -69,6 +69,23 @@ typedef struct {
 static const int16_t row_y[NUM_ROWS] = { 48, 88, 128, 168 };
 static const int16_t ladder_x[NUM_LADDERS] = { 32, 104, 188, 272 };
 static const char *const kind_name[4] = { "DOUGH", "SAUCE", "CHEESE", "BASIL" };
+
+/* Keep short classroom tones on the portable, MIDI-note audio API. */
+static void play_tone(uint32_t hz, uint32_t duration_ms) {
+    static const uint16_t semitone_hz[13] = {
+        262, 277, 294, 311, 330, 349, 370, 392, 415, 440, 466, 494, 523
+    };
+    int octave = 4;
+    while (hz < 262 && octave > 0) { hz *= 2; octave--; }
+    while (hz >= 523 && octave < 8) { hz /= 2; octave++; }
+    uint8_t semitone = 0;
+    while (semitone < 12 &&
+           hz > (uint32_t)(semitone_hz[semitone] + semitone_hz[semitone + 1]) / 2u) {
+        semitone++;
+    }
+    prg32_audio_note(0, PRG32_DEFAULT_INSTRUMENT_ID,
+                     (uint8_t)(12 * (octave + 1) + semitone), 190, duration_ms);
+}
 
 static Actor player;
 static Actor enemies[NUM_ENEMIES];
@@ -183,11 +200,11 @@ static void move_player(uint32_t input) {
         if ((input & PRG32_BTN_UP) && player.row > 0) {
             player.x = ladder_x[ladder] - PLAYER_W / 2;
             player.row--;
-            prg32_audio_beep(330, 18);
+            play_tone(330, 18);
         } else if ((input & PRG32_BTN_DOWN) && player.row < NUM_ROWS - 1) {
             player.x = ladder_x[ladder] - PLAYER_W / 2;
             player.row++;
-            prg32_audio_beep(220, 18);
+            play_tone(220, 18);
         }
     }
     player.y = row_y[player.row] - PLAYER_H;
@@ -201,7 +218,7 @@ static void collect_ingredients(void) {
             p->collected = 1;
             collected_now = 1;
             score += 25;
-            prg32_audio_beep(660 + (p->kind * 55), 45);
+            play_tone(660 + (p->kind * 55), 45);
         }
     }
 
@@ -219,7 +236,7 @@ static void collect_ingredients(void) {
         fed_students++;
         score += 250;
         message_timer = 120;
-        prg32_audio_beep(988, 100);
+        play_tone(988, 100);
         setup_ingredients();
         reset_enemies();
     }
@@ -259,7 +276,7 @@ static void check_collisions(void) {
         Actor *e = &enemies[i];
         if (e->row == player.row && abs_i((player.x + PLAYER_W / 2) - (e->x + ENEMY_W / 2)) < 11) {
             if (lives > 0) lives--;
-            prg32_audio_beep(120, 150);
+            play_tone(120, 150);
             if (lives == 0) {
                 game_over = 1;
                 message_timer = 255;
