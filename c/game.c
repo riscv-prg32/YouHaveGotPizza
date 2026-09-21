@@ -4,11 +4,30 @@
  * A small, original, Burger Time-inspired arcade game for the PRG32 runtime.
  * The goal is not to copy any character, level, sound, or artwork from BurgerTime:
  * the mechanics are reinterpreted as an academic Piazza where a teacher prepares
- * pizza slices for starving students. All visuals are generated from rectangles
- * and tiny original data tables in this file. The repository also includes
- * copyright-clean PNG sprite sheets and WAV masters under assets/; the current
- * cartridge uses rectangle sprites and PRG32 timed notes so it remains small and easy
- * to study in assembly.
+ * pizza slices for starving students.
+ *
+ * Visuals: PRG32 caps a cartridge at 64 KiB total (code + sprites + audio --
+ * see PRG32_CART_MAX_KIB / PRG32_CART_RAM_KIB in prg32.h), so a full-screen
+ * painted background would alone consume the entire budget. Instead this
+ * cartridge draws small, palette-limited indexed sprites and repeats them --
+ * exactly how real 8/16-bit hardware built large scenes cheaply. The pixel
+ * data lives in c/assets_indexed.inc, generated from assets/png/rom/*.png by
+ * assets/generate_indexed_art.py + assets/pack_indexed_assets.py, using
+ * PRG32's own prg32_sprite_draw_indexed()/prg32_sprite_draw_bitplanes() API
+ * (see prg32_indexed_sprite_t in prg32.h). The full-resolution reference
+ * artwork in assets/png/ is generated separately by assets/generate_assets.py
+ * for documentation, the Store icon, and the screenshot -- it is not compiled
+ * into the cartridge.
+ *
+ * Audio: gameplay uses PRG32's SID-like synth mixer (four waveforms with a
+ * cutoff/resonance filter, per-instrument ADSR, 8 voices, stereo panning).
+ * assets/generate_audio.py writes assets/audio.json, which PRG32's
+ * tools/prg32audio_pack.py packs into an AUDIO block embedded in the
+ * cartridge (see scripts/build.sh --audio-block); the block auto-loads when
+ * the cartridge installs, so this file only has to trigger notes. Channels
+ * 0-4 carry a looping 5-voice background theme (prg32_audio_play_track);
+ * channels 5-7 are reserved for one-shot sound effects so gameplay stingers
+ * never steal a voice from the music.
  *
  * PRG32 asks a cartridge to export exactly three functions. The cartridge builder
  * finds them from the entry prefix passed on the command line:
@@ -25,6 +44,7 @@
 
 #include "prg32.h"
 #include <stdint.h>
+#include "assets_indexed.inc"
 
 #define SCREEN_W 320
 #define SCREEN_H 200
@@ -38,19 +58,23 @@
 #define NUM_ENEMIES 4
 #define MAX_LIVES 3
 
-#define COLOR_SKY       0x867f
-#define COLOR_STONE     0x8410
-#define COLOR_STONE_DK  0x4208
-#define COLOR_PIAZZA    0xc638
-#define COLOR_DOUGH     0xff16
-#define COLOR_SAUCE     0xd000
 #define COLOR_CHEESE    0xffe0
-#define COLOR_BASIL     0x0480
-#define COLOR_STUDENT   0x7bef
-#define COLOR_PROF      0xfbe0
-#define COLOR_SHADOW    0x2104
 
 #define BTN_MOVE_MASK (PRG32_BTN_LEFT | PRG32_BTN_RIGHT | PRG32_BTN_UP | PRG32_BTN_DOWN)
+
+/* SID-like instrument ids, matching the order registered in assets/audio.json.
+ * Channels 0-4 are the looping background theme (instrument id == channel,
+ * enforced by the tracker); channels 5-7 are free for one-shot effects. */
+#define INSTR_BASS   0
+#define INSTR_PAD_A  1
+#define INSTR_PAD_B  2
+#define INSTR_ARP    3
+#define INSTR_HAT    4
+#define INSTR_BLIP   5
+#define INSTR_CHIME  6
+#define INSTR_THUD   7
+#define SFX_CHANNEL_FIRST 5
+#define SFX_CHANNEL_LAST  7
 
 typedef struct {
     int16_t x;
@@ -70,21 +94,19 @@ static const int16_t row_y[NUM_ROWS] = { 48, 88, 128, 168 };
 static const int16_t ladder_x[NUM_LADDERS] = { 32, 104, 188, 272 };
 static const char *const kind_name[4] = { "DOUGH", "SAUCE", "CHEESE", "BASIL" };
 
-/* Keep short classroom tones on the portable, MIDI-note audio API. */
-static void play_tone(uint32_t hz, uint32_t duration_ms) {
-    static const uint16_t semitone_hz[13] = {
-        262, 277, 294, 311, 330, 349, 370, 392, 415, 440, 466, 494, 523
-    };
-    int octave = 4;
-    while (hz < 262 && octave > 0) { hz *= 2; octave--; }
-    while (hz >= 523 && octave < 8) { hz /= 2; octave++; }
-    uint8_t semitone = 0;
-    while (semitone < 12 &&
-           hz > (uint32_t)(semitone_hz[semitone] + semitone_hz[semitone + 1]) / 2u) {
-        semitone++;
-    }
-    prg32_audio_note(0, PRG32_DEFAULT_INSTRUMENT_ID,
-                     (uint8_t)(12 * (octave + 1) + semitone), 190, duration_ms);
+/* One-shot sound effects round-robin across channels 5-7 so a burst of
+ * simultaneous events (e.g. a collect right before a collision) never
+ * silently steals a voice from another in-flight effect. The 5-voice
+ * background theme on channels 0-4 is never touched. */
+static uint8_t sfx_channel = SFX_CHANNEL_FIRST;
+
+static void sfx(uint8_t instrument, uint8_t note, uint8_t volume,
+                uint32_t duration_ms, int8_t pan) {
+    uint8_t channel = sfx_channel;
+    sfx_channel = (sfx_channel >= SFX_CHANNEL_LAST) ? SFX_CHANNEL_FIRST
+                                                     : (uint8_t)(sfx_channel + 1);
+    prg32_audio_set_channel_pan(channel, pan);
+    prg32_audio_note(channel, instrument, note, volume, duration_ms);
 }
 
 static Actor player;
@@ -99,15 +121,6 @@ static uint8_t message_timer;
 static uint8_t game_over;
 
 static int abs_i(int v) { return v < 0 ? -v : v; }
-
-static uint16_t ingredient_color(uint8_t kind) {
-    switch (kind & 3u) {
-    case 0: return COLOR_DOUGH;
-    case 1: return COLOR_SAUCE;
-    case 2: return COLOR_CHEESE;
-    default: return COLOR_BASIL;
-    }
-}
 
 static void draw_text_num2(int x, int y, uint16_t value, uint16_t fg) {
     char s[3];
@@ -200,11 +213,11 @@ static void move_player(uint32_t input) {
         if ((input & PRG32_BTN_UP) && player.row > 0) {
             player.x = ladder_x[ladder] - PLAYER_W / 2;
             player.row--;
-            play_tone(330, 18);
+            sfx(INSTR_CHIME, 69, 150, 60, PRG32_AUDIO_PAN_CENTER);
         } else if ((input & PRG32_BTN_DOWN) && player.row < NUM_ROWS - 1) {
             player.x = ladder_x[ladder] - PLAYER_W / 2;
             player.row++;
-            play_tone(220, 18);
+            sfx(INSTR_CHIME, 62, 150, 60, PRG32_AUDIO_PAN_CENTER);
         }
     }
     player.y = row_y[player.row] - PLAYER_H;
@@ -218,7 +231,8 @@ static void collect_ingredients(void) {
             p->collected = 1;
             collected_now = 1;
             score += 25;
-            play_tone(660 + (p->kind * 55), 45);
+            int8_t pan = (int8_t)(-40 + p->kind * 27);
+            sfx(INSTR_BLIP, (uint8_t)(72 + p->kind * 3), 220, 90, pan);
         }
     }
 
@@ -236,7 +250,7 @@ static void collect_ingredients(void) {
         fed_students++;
         score += 250;
         message_timer = 120;
-        play_tone(988, 100);
+        sfx(INSTR_CHIME, 84, 255, 260, PRG32_AUDIO_PAN_CENTER);
         setup_ingredients();
         reset_enemies();
     }
@@ -276,10 +290,12 @@ static void check_collisions(void) {
         Actor *e = &enemies[i];
         if (e->row == player.row && abs_i((player.x + PLAYER_W / 2) - (e->x + ENEMY_W / 2)) < 11) {
             if (lives > 0) lives--;
-            play_tone(120, 150);
             if (lives == 0) {
                 game_over = 1;
                 message_timer = 255;
+                sfx(INSTR_THUD, 28, 255, 400, PRG32_AUDIO_PAN_CENTER);
+            } else {
+                sfx(INSTR_THUD, 43, 220, 160, PRG32_AUDIO_PAN_CENTER);
             }
             reset_player();
             reset_enemies();
@@ -289,106 +305,68 @@ static void check_collisions(void) {
 }
 
 static void draw_piazza(void) {
-    prg32_gfx_clear(COLOR_SKY);
+    /* Sky gradient: three cheap flat bands read as atmosphere at this scale,
+     * for free -- no sprite data needed for open sky. */
+    prg32_gfx_rect(0, 0, SCREEN_W, 24, 0x6bdf);
+    prg32_gfx_rect(0, 24, SCREEN_W, 10, 0x7bff);
+    prg32_gfx_rect(0, 34, SCREEN_W, SCREEN_H - 34, 0x867f);
 
-    /* Skyline and university arches. */
-    prg32_gfx_rect(0, 24, 320, 26, 0x632c);
-    for (int x = 16; x < 320; x += 40) {
-        prg32_gfx_rect(x, 8, 18, 42, 0x8430);
-        prg32_gfx_rect(x + 5, 18, 8, 16, PRG32_COLOR_BLACK);
+    /* Skyline: one painted arch tile (bitplane-packed) repeated across the
+     * width instead of a full-width bitmap. */
+    for (int x = 16; x < SCREEN_W; x += 40) {
+        prg32_sprite_draw_bitplanes(x, 8, &art_tile_arch, 0);
     }
 
-    /* Platforms are the steps of the Piazza. */
+    /* Platforms: one painted stone tile repeated along each row. */
     for (uint8_t r = 0; r < NUM_ROWS; ++r) {
         int y = row_y[r];
-        prg32_gfx_rect(8, y, 304, 5, COLOR_STONE_DK);
-        prg32_gfx_rect(8, y + 5, 304, 5, COLOR_STONE);
-        for (int x = 12; x < 304; x += 16) {
-            prg32_gfx_rect(x, y + 6, 1, 3, COLOR_SHADOW);
+        for (int x = 8; x < 312; x += ART_TILE_STONE_W) {
+            prg32_sprite_draw_indexed(x, y, &art_tile_stone, 0);
         }
     }
 
-    /* Ladders are safe ways through the crowd. */
+    /* Ladders: one painted rung tile repeated vertically. */
     for (uint8_t i = 0; i < NUM_LADDERS; ++i) {
-        int x = ladder_x[i];
-        prg32_gfx_rect(x - 6, row_y[0], 3, row_y[3] - row_y[0] + 8, COLOR_STONE_DK);
-        prg32_gfx_rect(x + 5, row_y[0], 3, row_y[3] - row_y[0] + 8, COLOR_STONE_DK);
-        for (int y = row_y[0] + 6; y < row_y[3] + 8; y += 12) {
-            prg32_gfx_rect(x - 6, y, 14, 3, COLOR_STONE);
+        int x = ladder_x[i] - ART_TILE_LADDER_W / 2;
+        for (int y = row_y[0]; y < row_y[3] + 8; y += ART_TILE_LADDER_H) {
+            prg32_sprite_draw_indexed(x, y, &art_tile_ladder, 0);
         }
     }
 
     /* The plate at the bottom is the destination for every completed pizza. */
-    prg32_gfx_rect(218, 186, 76, 6, PRG32_COLOR_WHITE);
-    prg32_gfx_rect(230, 181, 52, 5, COLOR_DOUGH);
+    prg32_sprite_draw_indexed(256 - ART_TILE_PLATE_W / 2, SCREEN_H - ART_TILE_PLATE_H,
+                              &art_tile_plate, 0);
 }
 
 static void draw_ingredient(const Ingredient *p) {
     int y = row_y[p->row] - 12;
-    uint16_t c = p->collected ? COLOR_STONE : ingredient_color(p->kind);
-    prg32_gfx_rect(p->x - 13, y, 26, 8, c);
-    prg32_gfx_rect(p->x - 10, y + 2, 5, 4, PRG32_COLOR_WHITE);
-    prg32_gfx_rect(p->x + 5, y + 2, 5, 4, PRG32_COLOR_WHITE);
+    int x = p->x - ART_INGREDIENTS_W / 2;
     if (p->collected) {
         prg32_gfx_text8(p->x - 12, y - 8, "OK", PRG32_COLOR_WHITE, PRG32_COLOR_BLACK);
+        return;
     }
+    uint8_t anim = (uint8_t)((frame_no >> 4) & 3u);
+    uint32_t frame = (uint32_t)p->kind * 4u + anim;
+    prg32_sprite_draw_indexed(x, y, &art_ingredients, frame);
 }
 
 static void draw_player(void) {
-    int x = player.x;
-    int y = player.y;
-
-    /*
-     * Animated sprite, drawn from small rectangles.
-     *
-     * PRG32 can draw bitmap assets when a project chooses to convert PNGs into
-     * RGB565 tables, but rectangle sprites are perfect for a first RISC-V lab:
-     * every body part is just a function call with five integer arguments.  The
-     * frame number selects one of four poses, matching the master PNG sheet in
-     * assets/png/sprite_professor_4frames_12x16.png.
-     */
+    /* Four-frame animated indexed sprite (see assets/png/rom and
+     * c/assets_indexed.inc). The sprite is a couple of pixels larger than
+     * the PLAYER_W/PLAYER_H hitbox, so it is anchored to the hitbox's
+     * bottom-center -- the collision box itself is unchanged. */
+    int x = player.x + (PLAYER_W - ART_PROFESSOR_W) / 2;
+    int y = player.y + PLAYER_H - ART_PROFESSOR_H;
     uint8_t anim = (uint8_t)((frame_no >> 3) & 3u);
-    uint8_t long_left_leg = (anim == 0u || anim == 3u);
-
-    prg32_gfx_rect(x + 2, y, 6, 4, COLOR_PROF);
-    prg32_gfx_rect(x + 3, y + 1, 1, 1, PRG32_COLOR_BLACK);
-    prg32_gfx_rect(x + 6, y + 1, 1, 1, PRG32_COLOR_BLACK);
-    prg32_gfx_rect(x + 1, y + 4, 8, 7, PRG32_COLOR_BLUE);
-    prg32_gfx_rect(x + 4, y + 5, 2, 6, PRG32_COLOR_WHITE);
-
-    if (anim & 1u) {
-        prg32_gfx_rect(x, y + 7, 2, 4, COLOR_PROF);
-        prg32_gfx_rect(x + 8, y + 6, 2, 4, COLOR_PROF);
-    } else {
-        prg32_gfx_rect(x, y + 6, 2, 4, COLOR_PROF);
-        prg32_gfx_rect(x + 8, y + 7, 2, 4, COLOR_PROF);
-    }
-
-    prg32_gfx_rect(x + 1, y + 11, 3, long_left_leg ? 3 : 2, COLOR_SHADOW);
-    prg32_gfx_rect(x + 6, y + 11, 3, long_left_leg ? 2 : 3, COLOR_SHADOW);
+    prg32_sprite_draw_indexed(x, y, &art_professor, anim);
 }
 
 static void draw_enemy(const Actor *e, uint8_t i) {
-    uint16_t shirt = (i & 1u) ? PRG32_COLOR_MAGENTA : COLOR_STUDENT;
+    const prg32_indexed_sprite_t *sheet = (i & 1u) ? &art_student_magenta : &art_student_blue;
     uint8_t anim = (uint8_t)(((frame_no >> 3) + i) & 3u);
-
-    /* Hungry students use the same four-frame walk cycle idea as the professor. */
-    prg32_gfx_rect(e->x + 2, e->y, 6, 4, 0xffbe);
-    prg32_gfx_rect(e->x, e->y + 4, 10, 6, shirt);
-    prg32_gfx_rect(e->x + 2, e->y + 2, 1, 1, PRG32_COLOR_BLACK);
-    prg32_gfx_rect(e->x + 7, e->y + 2, 1, 1, PRG32_COLOR_BLACK);
-
-    if (anim & 1u) {
-        prg32_gfx_rect(e->x, e->y + 5, 2, 2, 0xffbe);
-        prg32_gfx_rect(e->x + 9, e->y + 7, 1, 2, 0xffbe);
-        prg32_gfx_rect(e->x + 2, e->y + 10, 3, 4, COLOR_SHADOW);
-        prg32_gfx_rect(e->x + 7, e->y + 10, 3, 2, COLOR_SHADOW);
-    } else {
-        prg32_gfx_rect(e->x, e->y + 7, 2, 2, 0xffbe);
-        prg32_gfx_rect(e->x + 9, e->y + 5, 1, 2, 0xffbe);
-        prg32_gfx_rect(e->x + 2, e->y + 10, 3, 2, COLOR_SHADOW);
-        prg32_gfx_rect(e->x + 7, e->y + 10, 3, 4, COLOR_SHADOW);
-    }
+    int x = e->x + (ENEMY_W - ART_STUDENT_BLUE_W) / 2;
+    int y = e->y + ENEMY_H - ART_STUDENT_BLUE_H;
+    prg32_sprite_draw_indexed(x, y, sheet, anim);
 }
 
 static void draw_hud(void) {
@@ -396,8 +374,9 @@ static void draw_hud(void) {
     prg32_gfx_text8(4, 4, "YOU HAVE GOT PIZZA", COLOR_CHEESE, PRG32_COLOR_BLACK);
     prg32_gfx_text8(172, 4, "SCORE", PRG32_COLOR_WHITE, PRG32_COLOR_BLACK);
     draw_text_num4(224, 4, score, PRG32_COLOR_WHITE);
-    prg32_gfx_text8(268, 4, "L", PRG32_COLOR_WHITE, PRG32_COLOR_BLACK);
-    draw_text_num2(284, 4, lives, PRG32_COLOR_WHITE);
+    for (uint8_t i = 0; i < lives; ++i) {
+        prg32_sprite_draw_indexed(272 + i * (ART_LIFE_ICON_W + 3), 4, &art_life_icon, 0);
+    }
 }
 
 static void draw_recipe_hint(void) {
@@ -406,6 +385,14 @@ static void draw_recipe_hint(void) {
 }
 
 void you_have_got_pizza_c_init(void) {
+    /* Start the looping SID-like theme once; a later restart (see update()
+     * below) resets gameplay state only, so the music keeps playing through
+     * a "press START to retry". Mono-vs-stereo output is a resident-firmware
+     * build setting (prg32_audio_set_mode is not in the portable cartridge
+     * ABI table -- a cartridge cannot force it), so the channel panning here
+     * is what actually carries the stereo image once the firmware is built
+     * with stereo output enabled; it still shapes the mix under mono fold-down. */
+    prg32_audio_play_track(0);
     start_new_game();
 }
 
@@ -437,14 +424,20 @@ void you_have_got_pizza_c_draw(void) {
     draw_recipe_hint();
 
     if (message_timer > 0) {
-        prg32_gfx_rect(52, 68, 216, 40, PRG32_COLOR_BLACK);
         if (game_over) {
+            prg32_gfx_rect(52, 68, 216, 40, PRG32_COLOR_BLACK);
             prg32_gfx_text8(88, 78, "GAME OVER - PRESS START", PRG32_COLOR_RED, PRG32_COLOR_BLACK);
             prg32_gfx_text8(92, 94, "STUDENTS STILL HUNGRY", COLOR_CHEESE, PRG32_COLOR_BLACK);
         } else if (fed_students == 0 && score == 0) {
-            prg32_gfx_text8(72, 78, "Feed students with pizza!", COLOR_CHEESE, PRG32_COLOR_BLACK);
-            prg32_gfx_text8(76, 94, "Use joystick 1 only", PRG32_COLOR_WHITE, PRG32_COLOR_BLACK);
+            /* Attract screen: the one place with room in the 64 KiB budget
+             * for a bigger painted centerpiece (see art_title_emblem). */
+            prg32_gfx_rect(40, 56, 240, 66, PRG32_COLOR_BLACK);
+            prg32_sprite_draw_indexed(48, 62, &art_title_emblem, 0);
+            prg32_gfx_text8(114, 70, "Feed students", COLOR_CHEESE, PRG32_COLOR_BLACK);
+            prg32_gfx_text8(114, 84, "with pizza!", COLOR_CHEESE, PRG32_COLOR_BLACK);
+            prg32_gfx_text8(114, 104, "Use joystick 1 only", PRG32_COLOR_WHITE, PRG32_COLOR_BLACK);
         } else {
+            prg32_gfx_rect(52, 68, 216, 40, PRG32_COLOR_BLACK);
             prg32_gfx_text8(80, 78, "A PIZZA IS READY!", COLOR_CHEESE, PRG32_COLOR_BLACK);
             prg32_gfx_text8(68, 94, "Cool tools make hunger", PRG32_COLOR_WHITE, PRG32_COLOR_BLACK);
         }

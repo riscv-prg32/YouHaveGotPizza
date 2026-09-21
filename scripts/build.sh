@@ -15,11 +15,25 @@ case "$architecture" in
   *) echo "error: PRG32_ARCHITECTURE must be esp32c6 or qemu" >&2; exit 2 ;;
 esac
 
-mkdir -p "$repo_dir/dist"
+mkdir -p "$repo_dir/dist" "$repo_dir/build"
+
+# Regenerate the indexed-color sprite/tile art and pack it into the single
+# generated translation unit c/game.c includes (PRG32 cartridges compile one
+# C source file, so every sprite asset has to live in one place -- see
+# c/assets_indexed.inc's header comment).
+python3 "$repo_dir/assets/generate_indexed_art.py"
+PRG32_REPO="$prg32_repo" python3 "$repo_dir/assets/pack_indexed_assets.py"
+
+# Regenerate the SID-like audio score and pack it into a PRG32 AUDIO block.
+python3 "$repo_dir/assets/generate_audio.py"
+python3 "$prg32_repo/tools/prg32audio_pack.py" \
+  "$repo_dir/assets/audio.json" --out "$repo_dir/build/audio.block"
+
 (cd "$prg32_repo" && python3 -m prg32 cartridge build \
   "$repo_dir/c/game.c" \
   --portable --entry-prefix you_have_got_pizza_c --name "$name" \
   --architecture "$architecture" \
+  --audio-block "$repo_dir/build/audio.block" \
   --out "$repo_dir/dist/$name-$architecture.raw.prg32")
 
 (cd "$prg32_repo" && python3 -m prg32 store attach-metadata \

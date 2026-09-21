@@ -278,7 +278,13 @@ you_have_got_pizza_init:
     addi    sp, sp, 16
     ret
 
-/* Helper: test if player is on a ladder. Output a0=1 if yes, a0=0 if no. */
+/* Helper: test if player is near a ladder.
+   Output: a0=1 if near a ladder, else a0=0.
+           a1=candidate snapped x (ladder_x - PLAYER_W/2), valid only when a0=1.
+   Note: this only *reports* proximity. It must not mutate player_x itself,
+   otherwise being near a ladder silently overrides horizontal movement every
+   frame even when UP/DOWN are not pressed (see the equivalent C-side fix in
+   move_player()). The caller snaps player_x only when it actually climbs. */
 player_on_ladder:
     addi    sp, sp, -16
     sw      ra, 12(sp)
@@ -299,9 +305,7 @@ player_on_ladder:
     blt     t0, t6, 2f
     addi    t2, t2, 1
     j       1b
-2:  addi    t5, t5, -5
-    la      t3, player_x
-    sw      t5, 0(t3)              /* snap to ladder: movement becomes readable */
+2:  addi    a1, t5, -5
     li      a0, 1
     lw      ra, 12(sp)
     addi    sp, sp, 16
@@ -319,6 +323,7 @@ you_have_got_pizza_update:
     sw      ra, 28(sp)
     sw      s0, 24(sp)
     sw      s1, 20(sp)
+    sw      s2, 16(sp)
 
     la      t0, frame_no
     lw      t1, 0(t0)
@@ -360,25 +365,33 @@ you_have_got_pizza_update:
     mv      t1, t2
 5:  sw      t1, 0(t0)
 
-    /* Vertical movement is only legal when the player is close to a ladder.
-       Keep the row in s1 while calling the audio routine, because t registers
-       are caller-saved by the RISC-V ABI. */
+    /* Vertical movement is only legal when the player is close to a ladder,
+       and only actually happens (and snaps x to the ladder) when UP or DOWN
+       is pressed -- otherwise walking past a ladder must not touch player_x.
+       Keep the row in s1 and the candidate snap x in s2 while calling the
+       audio routine, because t/a registers are caller-saved by the ABI. */
     call    player_on_ladder
     beqz    a0, .L_no_ladder_move
+    mv      s2, a1                  /* candidate snapped ladder x */
     la      t0, player_row
     lw      s1, 0(t0)
     andi    t2, s0, BTN_UP
     beqz    t2, 6f
     beqz    s1, 6f
     addi    s1, s1, -1
+    la      t0, player_x
+    sw      s2, 0(t0)
     li      a0, 330
     li      a1, 18
     call    pizza_audio_note
+    j       7f
 6:  andi    t2, s0, BTN_DOWN
     beqz    t2, 7f
     li      t3, 3
     bge     s1, t3, 7f
     addi    s1, s1, 1
+    la      t0, player_x
+    sw      s2, 0(t0)
     li      a0, 220
     li      a1, 18
     call    pizza_audio_note
@@ -396,6 +409,7 @@ you_have_got_pizza_update:
     call    collide_asm
 
 .L_update_done:
+    lw      s2, 16(sp)
     lw      s1, 20(sp)
     lw      s0, 24(sp)
     lw      ra, 28(sp)
@@ -437,7 +451,7 @@ collect_asm:
     bge     t4, zero, .L_abs_done
     neg     t4, t4
 .L_abs_done:
-    li      t5, 14
+    li      t5, 13                  /* matches C: abs_i(...) < 13 */
     bge     t4, t5, .L_collect_next
 
     li      t2, 1
@@ -564,7 +578,7 @@ collide_asm:
     sub     t4, t2, t3
     bge     t4, zero, 2f
     neg     t4, t4
-2:  li      t5, 12
+2:  li      t5, 11                  /* matches C: abs_i(...) < 11 */
     bge     t4, t5, 3f
     la      t1, lives
     lw      t2, 0(t1)
