@@ -131,6 +131,18 @@ fi
 ASM_CART="$OUT_DIR/you-have-got-pizza-asm.prg32"
 C_CART="$OUT_DIR/you-have-got-pizza-c.prg32"
 
+# The C cartridge draws indexed-color sprite/tile art and plays a SID-like
+# audio block; both are generated from assets/ and packed with PRG32's own
+# tools (see scripts/build.sh for the same steps, explained there). The
+# assembly cartridge intentionally stays on its existing rectangle/tone
+# approach -- see README's "Scope" note on why the two versions diverge here.
+mkdir -p "$GAME_ROOT/build"
+python3 "$GAME_ROOT/assets/generate_indexed_art.py"
+PRG32_REPO="$PRG32_ROOT" python3 "$GAME_ROOT/assets/pack_indexed_assets.py"
+python3 "$GAME_ROOT/assets/generate_audio.py"
+python3 "$PRG32_ROOT/tools/prg32audio_pack.py" \
+  "$GAME_ROOT/assets/audio.json" --out "$GAME_ROOT/build/audio.block"
+
 (cd "$PRG32_ROOT" && python3 -m prg32 cartridge build \
   "$GAME_ROOT/assembly/game.S" \
   --portable --architecture "$TARGET_MODE" \
@@ -143,6 +155,7 @@ C_CART="$OUT_DIR/you-have-got-pizza-c.prg32"
   --portable --architecture "$TARGET_MODE" \
   --entry-prefix you_have_got_pizza_c \
   --name "You Have Got Pizza C" \
+  --audio-block "$GAME_ROOT/build/audio.block" \
   --out "$C_CART")
 
 echo "Built cartridges:"

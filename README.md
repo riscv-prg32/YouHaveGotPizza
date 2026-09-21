@@ -4,8 +4,8 @@
 
 The game is deliberately implemented twice:
 
-- `assembly/game.S`: RISC-V assembly using the PRG32 cartridge ABI directly.
-- `c/game.c`: a pedagogically commented C version with the same gameplay structure.
+- `assembly/game.S`: RISC-V assembly using the PRG32 cartridge ABI directly. Draws with plain rectangles and single-tone beeps, kept deliberately simple as a first low-level lab.
+- `c/game.c`: a pedagogically commented C version with the same gameplay structure. It additionally renders small painted, palette-indexed sprites/tiles and plays an 8-voice SID-like soundtrack through PRG32's real synth mixer -- see "Indexed-color art and SID-like audio (C version)" below.
 
 The repository also includes original PNG graphics and WAV sound masters. No copyrighted sprites, music, names, layouts, or sounds from BurgerTime or any other commercial game are included.
 
@@ -20,22 +20,33 @@ you_have_got_pizza/
 |-- assembly/
 |   `-- game.S
 |-- c/
-|   `-- game.c
+|   |-- game.c
+|   `-- assets_indexed.inc      (generated; see pack_indexed_assets.py)
 |-- assets/
 |   |-- icon.png
 |   |-- screenshot.png
-|   |-- generate_assets.py
+|   |-- generate_assets.py      (background/splash/UI reference art + WAV masters)
+|   |-- generate_indexed_art.py (small palette-limited ROM sprite/tile art)
+|   |-- pack_indexed_assets.py  (PNG -> c/assets_indexed.inc, via PRG32's own tools)
+|   |-- generate_audio.py       (writes audio.json, the SID-like score)
+|   |-- audio.json
 |   |-- manifest.json
 |   |-- original_art.md
 |   |-- png/
 |   |   |-- background_piazza_320x200.png
 |   |   |-- splash_you_have_got_pizza_320x200.png
-|   |   |-- sprite_professor_4frames_12x16.png
-|   |   |-- sprite_student_blue_4frames_12x16.png
-|   |   |-- sprite_student_magenta_4frames_12x16.png
-|   |   |-- ingredients_4x4_28x12.png
-|   |   |-- tiles_platform_ladder_plate.png
-|   |   `-- ui_lives_score_icons.png
+|   |   |-- ui_lives_score_icons.png
+|   |   `-- rom/                (small indexed PNGs actually compiled into the cartridge)
+|   |       |-- rom_professor_4frames_12x16.png
+|   |       |-- rom_student_blue_4frames_12x16.png
+|   |       |-- rom_student_magenta_4frames_12x16.png
+|   |       |-- rom_ingredients_4x4_28x12.png
+|   |       |-- rom_tile_arch_20x26.png
+|   |       |-- rom_tile_stone_16x10.png
+|   |       |-- rom_tile_ladder_14x12.png
+|   |       |-- rom_tile_plate_80x24.png
+|   |       |-- rom_title_emblem_56x48.png
+|   |       `-- rom_life_icon_8x8.png
 |   `-- wav/
 |       |-- sfx_start_jingle.wav
 |       |-- sfx_climb_up.wav
@@ -64,7 +75,7 @@ you_have_got_pizza/
 
 You move through a Piazza made of stone platforms and ladders. Collect the pizza ingredients in the order suggested by the level art: dough, sauce, cheese, and basil. Starving students wander across the platforms. If a student reaches you before the pizza is ready, you lose a life. When all ingredients are collected, a pizza is ready, the students are fed, and the board resets at a slightly more urgent pace.
 
-The professor and students use four-frame animated walking sprites. In the current educational runtime code they are drawn as rectangles, because this keeps every pixel operation visible in C and in RISC-V assembly. The PNG sprite sheets under `assets/png` are the master artwork and customization reference for future bitmap-backed variants.
+The assembly version draws the professor and students as plain rectangles with single-tone beeps, keeping every pixel operation and every sound trivially traceable in RISC-V. The C version instead draws small, hand-painted, palette-indexed sprites and plays them over an 8-voice synth soundtrack -- see the next section for why the two versions now differ, and how to regenerate or restyle that art and music.
 
 ### Controls
 
@@ -355,81 +366,76 @@ python3 -m prg32 cartridge build /path/to/YouHaveGotPizza/assembly/game.S \
   --name pizza-asm --out /path/to/YouHaveGotPizza/dist/qemu/pizza-asm.prg32
 ```
 
-The C source uses `c/game.c` and entry prefix `you_have_got_pizza_c`.
+The C source uses `c/game.c` and entry prefix `you_have_got_pizza_c`. It
+`#include`s the generated `c/assets_indexed.inc`, so run
+`assets/generate_indexed_art.py` and `assets/pack_indexed_assets.py` first
+(see the next section). To include the SID-like soundtrack, also pack
+`assets/audio.json` with `tools/prg32audio_pack.py` and pass the result via
+`--audio-block`.
 
-## Personalizing graphics and sounds
+## Indexed-color art and SID-like audio (C version)
 
-The asset directory is designed so students can modify the game without touching gameplay first.
+PRG32 caps a cartridge at **64 KiB total** -- code, sprite data, and audio
+block together (`PRG32_CART_MAX_KIB` / `PRG32_CART_RAM_KIB` in PRG32's
+`prg32.h`). A single full-screen 320x200 painted background at 4 or 8 bits
+per pixel would be 16-64 KB by itself -- more than the entire budget. Real
+'90s hardware never stored full-screen raster backgrounds for exactly this
+reason: it built scenes from small, cheaply repeated tiles and sprites. The C
+version follows the same approach, using PRG32's real indexed-sprite pipeline
+(`prg32_sprite_draw_indexed` / `prg32_sprite_draw_bitplanes`,
+`prg32_indexed_sprite_t`) instead of the flat rectangles used everywhere
+else. This is why the C and assembly versions now render differently: porting
+this to hand-written RV32 assembly would roughly double the size of a file
+meant to stay small and traceable, so `assembly/game.S` intentionally stays
+on the original rectangle/single-tone approach.
 
-### Regenerate the original assets
+A full 320x200 build of the whole cartridge (game logic + all sprite/tile art
++ the audio block) currently comes to about 15 KB -- comfortably inside the
+64 KB budget, with room for further additions.
 
-The current PNG and WAV files are generated. Rebuild them with:
+### Regenerate everything
 
 ```sh
-cd assets
-python3 generate_assets.py
+python3 assets/generate_assets.py          # background/splash/UI reference PNGs + WAV masters
+python3 assets/generate_indexed_art.py     # small palette-limited ROM sprite/tile PNGs (assets/png/rom/)
+PRG32_REPO=/path/to/PRG32 python3 assets/pack_indexed_assets.py   # -> c/assets_indexed.inc
+python3 assets/generate_audio.py           # -> assets/audio.json
 ```
 
-This rewrites `assets/png`, `assets/wav`, and `assets/manifest.json`.
+`scripts/build.sh` and `tools/build_cartridges.sh` already run the indexed-art
+and audio steps automatically before building the C cartridge, so this is
+only needed when iterating on art/audio without a full rebuild.
 
-### Change the splash screen
+### Two tiers of art
 
-Edit the `draw_splash()` function in `assets/generate_assets.py`, then regenerate:
+- `assets/generate_assets.py` draws the big, full-resolution **reference**
+  art (`background_piazza_320x200.png`, the splash screen, the UI icon
+  sheet) and the WAV sound masters. None of this is compiled into the
+  cartridge -- it exists for documentation, the Store icon, and the
+  screenshot.
+- `assets/generate_indexed_art.py` draws the small, palette-limited **ROM**
+  art under `assets/png/rom/` that is actually compiled in: the professor and
+  student walk cycles (12x16, 4 frames), the ingredient sheet (28x12, 4
+  kinds x 4 frames), and small repeating environment tiles (skyline arch,
+  stone platform brick, ladder rung, bottom plate) plus a painted title
+  emblem and a HUD life icon. Every image is flattened onto a solid magenta
+  `(255, 0, 255)` key color, painted first so it lands at palette index 0 for
+  transparency.
+- `assets/pack_indexed_assets.py` converts those PNGs into `c/assets_indexed.inc`
+  using PRG32's own `tools/prg32_image_convert.py` packing functions -- the
+  same code path PRG32's `devicedemo` cartridge uses for its indexed/bitplane
+  examples. PRG32 cartridges compile exactly one C source file, so every
+  sprite asset has to live in this one generated, `#include`d file; requires
+  `PRG32_REPO` to point at a PRG32 checkout.
 
-```sh
-cd assets
-python3 generate_assets.py
-```
-
-Keep the splash image at **320x200** pixels to match the PRG32 graphics viewport:
-
-```text
-assets/png/splash_you_have_got_pizza_320x200.png
-```
-
-Suggested student exercises:
-
-- change the title typography;
-- draw a different pizza symbol;
-- add the name of a class, lab, or RISC-V event;
-- keep the artwork original and avoid logos or characters from other games.
-
-### Change the Piazza background
-
-Edit `draw_background()` in `assets/generate_assets.py`. The output file is:
-
-```text
-assets/png/background_piazza_320x200.png
-```
-
-The runtime C and assembly versions currently redraw the background procedurally for clarity. To keep code and art aligned, update these routines after changing the background:
-
-- `draw_piazza()` in `c/game.c`;
-- `draw_piazza_asm` in `assembly/game.S`.
-
-A good teaching workflow is to first change the PNG, discuss the composition, and then translate the same visual ideas into rectangle calls in C or assembly.
-
-### Change animated sprites
-
-The animated sprite sheets use a fixed frame layout:
-
-| File | Format |
-|---|---|
-| `sprite_professor_4frames_12x16.png` | 4 horizontal frames, each 12x16 pixels |
-| `sprite_student_blue_4frames_12x16.png` | 4 horizontal frames, each 12x16 pixels |
-| `sprite_student_magenta_4frames_12x16.png` | 4 horizontal frames, each 12x16 pixels |
-| `ingredients_4x4_28x12.png` | 4 rows of ingredients, 4 animation frames per row |
-
-To personalize the professor or students, edit these functions in `assets/generate_assets.py`:
-
-- `sprite_player_frame(frame)`;
-- `sprite_student_frame(frame, shirt)`;
-- `ingredient_icon(kind, frame)`.
-
-Then regenerate the assets. If you want the running cartridge to match the new sprites exactly, also update:
-
-- `draw_player()` and `draw_enemy()` in `c/game.c`;
-- `draw_player_asm` and `draw_enemies_asm` in `assembly/game.S`.
+To personalize a sprite or tile: edit the matching drawing function in
+`generate_indexed_art.py` (e.g. `professor_frame()`, `ingredient_frame()`,
+`stone_tile()`, `title_emblem()`), keep the frame's pixel dimensions and
+frame-grid layout unchanged (or update the matching entry in
+`pack_indexed_assets.py`'s `ASSETS` list and the draw call in `c/game.c` if
+you resize it), then rerun `generate_indexed_art.py` + `pack_indexed_assets.py`.
+Each image currently stays within a 16-color budget except the title emblem,
+which deliberately uses more colors to exercise PRG32's 256-color path.
 
 The animation frame in both cartridge versions is derived from the frame counter:
 
@@ -439,28 +445,41 @@ uint8_t anim = (frame_no >> 3) & 3u;
 
 That expression is an excellent low-level programming lesson: shifting divides by a power of two, masking computes a modulo for a power-of-two frame count, and the resulting small integer selects a pose.
 
-### Change sound effects
+### SID-like audio
 
-The WAV files are generated by `write_wav()` calls in `assets/generate_assets.py`. Each sound is a list of `(frequency_hz, duration_seconds)` notes. For example:
+The C version plays PRG32's real synth mixer: four waveforms (triangle, saw,
+pulse, noise) with a cutoff/resonance filter baked into the sample id,
+per-instrument ADSR envelopes, up to 8 voices, and stereo panning.
+`assets/generate_audio.py` writes `assets/audio.json` (instruments + one
+looping tracker track); PRG32's `tools/prg32audio_pack.py` packs that into a
+binary `AUDIO` block, which `scripts/build.sh` passes to the cartridge
+builder via `--audio-block`. The block auto-loads when the cartridge
+installs, so `c/game.c` only has to call `prg32_audio_play_track()` and
+`prg32_audio_note()`.
 
-```python
-write_wav("sfx_pizza_ready.wav", [(784, .08), (988, .08), (1175, .08), (1568, .20)])
-```
+Channel layout (channel index == instrument index for tracker-driven notes,
+enforced by PRG32's tracker):
 
-To personalize sounds:
+| Channels | Role |
+|---|---|
+| 0-4 | looping 5-voice background theme (bass, two chord pads, an arpeggio lead, a noise hi-hat) |
+| 5-7 | one-shot sound effects (collect, climb, collision, pizza-ready, game-over), round-robined by `sfx()` in `c/game.c` so gameplay stingers never steal a voice from the music |
 
-1. edit the note lists;
-2. regenerate with `python3 generate_assets.py`;
-3. keep sounds short, mono, and simple for embedded friendliness.
+To personalize the music, edit the chord progression, bass/arpeggio patterns,
+or instrument ADSR/waveform values in `generate_audio.py`, then regenerate
+`audio.json` and rebuild. To personalize an effect, change the `sfx(...)`
+call site in `c/game.c` (instrument, MIDI note, volume, duration, pan) --
+see `move_player()`, `collect_ingredients()`, and `check_collisions()`.
 
-The cartridge converts short tone frequencies to MIDI notes with `play_tone()`
-in C and `pizza_audio_note` in assembly. Update their frequency arguments when
-the WAV masters change:
+Note: mono-vs-stereo output is a resident-firmware build setting
+(`prg32_audio_set_mode` is not exposed to portable cartridges), so a cartridge
+cannot force stereo at runtime -- the panning here shapes the mix either way,
+but a true stereo image needs the firmware itself built with stereo output
+enabled.
 
-- climb sounds: `move_player()` in C and `move_player_asm` in assembly;
-- collect sounds: `collect_ingredients()` in C and `collect_asm` in assembly;
-- collision sounds: `check_collisions()` in C and `collide_asm` in assembly;
-- pizza-ready sound: completion branch in both versions.
+The original WAV masters under `assets/wav/` and the `write_wav()` calls in
+`generate_assets.py` are unchanged and still documented as before, in case
+you want a sample-based (rather than synth-based) starting point.
 
 ### Copyright hygiene for personalized repositories
 
